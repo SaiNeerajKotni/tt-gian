@@ -12,7 +12,7 @@
    // ========
    // Settings
    // ========
-   
+   //m4_define(DEBUG_MAX_CNT, 14'h)
    //-------------------------------------------------------
    // Build Target Configuration
    //
@@ -20,8 +20,8 @@
    var(target, ASIC)   /// Note, the FPGA CI flow will set this to FPGA.
    //-------------------------------------------------------
    
-   var(in_fpga, 1)   /// 1 to include the demo board. (Note: Logic will be under /fpga_pins/fpga.)
-   var(debounce_inputs, 1)
+   var(in_fpga, 1)   //0 1 to include the demo board. (Note: Logic will be under /fpga_pins/fpga.)
+   var(debounce_inputs, 0)
                      /// Legal values:
                      ///   1: Provide synchronization and debouncing on all input signals.
                      ///   0: Don't provide synchronization and debouncing.
@@ -32,7 +32,7 @@
    // ======================
    
    // If debouncing, a user's module is within a wrapper, so it has a different name.
-   var(user_module_name, m5_if(m5_debounce_inputs, my_design, m5_my_design))
+   var(user_module_name, my_design)
    var(debounce_cnt, m5_if_defined_as(MAKERCHIP, 1, 8'h03, 8'hff))
 
 \SV
@@ -40,7 +40,57 @@
    m4_include_lib(https:/['']/raw.githubusercontent.com/os-fpga/Virtual-FPGA-Lab/35e36bd144fddd75495d4cbc01c4fc50ac5bde6f/tlv_lib/tiny_tapeout_lib.tlv)
    // Calculator VIZ.
    m4_include_lib(https:/['']/raw.githubusercontent.com/efabless/chipcraft---mest-course/main/tlv_lib/calculator_shell_lib.tlv)
+   
+   module tt_um_example (
+    input  wire [7:0] ui_in,    // Dedicated inputs - connected to the input switches
+    output wire [7:0] uo_out,   // Dedicated outputs - connected to the 7 segment display
+       // The FPGA is based on TinyTapeout 3 which has no bidirectional I/Os (vs. TT6 for the ASIC).
+    input  wire [7:0] uio_in,   // IOs: Bidirectional Input path
+    output wire [7:0] uio_out,  // IOs: Bidirectional Output path
+    output wire [7:0] uio_oe,   // IOs: Bidirectional Enable path (active high: 0=input, 1=output)
+    
+    input  wire       ena,      // will go high when the design is enabled
+    input  wire       clk,      // clock
+    input  wire       rst_n     // reset_n - low to reset
+);
+        // Synchronize.
+    logic [17:0] inputs_ff, inputs_sync;
+    always @(posedge clk) begin
+        inputs_ff <= {ui_in, uio_in, ena, rst_n};
+        inputs_sync <= inputs_ff;
+    end
 
+    // Debounce.
+    `define DEBOUNCE_MAX_CNT 14'h3fd;
+    logic [17:0] inputs_candidate, inputs_captured;
+    logic sync_rst_n = inputs_sync[0];
+    logic [13:0] cnt;
+    always @(posedge clk) begin
+        if (!sync_rst_n)
+           cnt <= `DEBOUNCE_MAX_CNT;
+        else if (inputs_sync != inputs_candidate) begin
+           // Inputs changed before stablizing.
+           cnt <= `DEBOUNCE_MAX_CNT;
+           inputs_candidate <= inputs_sync;
+        end
+        else if (cnt > 0)
+           cnt <= cnt - 14'b1;
+        else begin
+           // Cnt == 0. Capture candidate inputs.
+           inputs_captured <= inputs_candidate;
+        end
+    end
+    logic [7:0] clean_ui_in, clean_uio_in;
+    logic clean_ena, clean_rst_n;
+    assign {clean_ui_in, clean_uio_in, clean_ena, clean_rst_n} = inputs_captured;
+
+    my_design my_design (
+        .ui_in(clean_ui_in),
+        .uio_in(clean_uio_in),
+        .ena(clean_ena),
+        .rst_n(clean_rst_n),
+        .*);
+endmodule
 \TLV calc()
    
    
@@ -110,7 +160,7 @@ module top(input logic clk, input logic reset, input logic [31:0] cyc_cnt, outpu
    logic rst_n = ! reset;
    
    // Instantiate the Tiny Tapeout module.
-   m5_user_module_name tt(.*);
+   tt_um_example tt(.*);
    
    assign passed = top.cyc_cnt > 80;
    assign failed = 1'b0;
