@@ -61,7 +61,7 @@
     end
 
     // Debounce.
-    `define DEBOUNCE_MAX_CNT 14'h3fd;
+    `define DEBOUNCE_MAX_CNT 14'h3ffd
     logic [17:0] inputs_candidate, inputs_captured;
     logic sync_rst_n = inputs_sync[0];
     logic [13:0] cnt;
