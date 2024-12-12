@@ -17,11 +17,11 @@
    // Build Target Configuration
    //
    var(my_design, tt_um_example)   /// The name of your top-level TT module, to match your info.yml.
-   var(target, FPGA)   /// Note, the FPGA CI flow will set this to FPGA.
+   var(target, ASIC)   /// Note, the FPGA CI flow will set this to FPGA.
    //-------------------------------------------------------
    
-   var(in_fpga, 1)   //0 1 to include the demo board. (Note: Logic will be under /fpga_pins/fpga.)
-   var(debounce_inputs, 0)
+   var(in_fpga, 1)   /// 1 to include the demo board. (Note: Logic will be under /fpga_pins/fpga.)
+   var(debounce_inputs, 1)
                      /// Legal values:
                      ///   1: Provide synchronization and debouncing on all input signals.
                      ///   0: Don't provide synchronization and debouncing.
@@ -32,7 +32,7 @@
    // ======================
    
    // If debouncing, a user's module is within a wrapper, so it has a different name.
-   var(user_module_name, my_design)
+   var(user_module_name, m5_if(m5_debounce_inputs, my_design, m5_my_design))
    var(debounce_cnt, m5_if_defined_as(MAKERCHIP, 1, 8'h03, 8'hff))
 
 \SV
@@ -40,57 +40,7 @@
    m4_include_lib(https:/['']/raw.githubusercontent.com/os-fpga/Virtual-FPGA-Lab/35e36bd144fddd75495d4cbc01c4fc50ac5bde6f/tlv_lib/tiny_tapeout_lib.tlv)
    // Calculator VIZ.
    m4_include_lib(https:/['']/raw.githubusercontent.com/efabless/chipcraft---mest-course/main/tlv_lib/calculator_shell_lib.tlv)
-   
-   module tt_um_example (
-    input  wire [7:0] ui_in,    // Dedicated inputs - connected to the input switches
-    output wire [7:0] uo_out,   // Dedicated outputs - connected to the 7 segment display
-       // The FPGA is based on TinyTapeout 3 which has no bidirectional I/Os (vs. TT6 for the ASIC).
-   // input  wire [7:0] uio_in,   // IOs: Bidirectional Input path
-    //output wire [7:0] uio_out,  // IOs: Bidirectional Output path
-    //output wire [7:0] uio_oe,   // IOs: Bidirectional Enable path (active high: 0=input, 1=output)
-    
-    input  wire       ena,      // will go high when the design is enabled
-    input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - low to reset
-);
-        // Synchronize.
-    logic [17:0] inputs_ff, inputs_sync;
-    always @(posedge clk) begin
-        inputs_ff <= {ui_in, ena, rst_n};
-        inputs_sync <= inputs_ff;
-    end
 
-    // Debounce.
-    `define DEBOUNCE_MAX_CNT 14'h3ffd
-    logic [17:0] inputs_candidate, inputs_captured;
-    logic sync_rst_n = inputs_sync[0];
-    logic [13:0] cnt;
-    always @(posedge clk) begin
-        if (!sync_rst_n)
-           cnt <= `DEBOUNCE_MAX_CNT;
-        else if (inputs_sync != inputs_candidate) begin
-           // Inputs changed before stablizing.
-           cnt <= `DEBOUNCE_MAX_CNT;
-           inputs_candidate <= inputs_sync;
-        end
-        else if (cnt > 0)
-           cnt <= cnt - 14'b1;
-        else begin
-           // Cnt == 0. Capture candidate inputs.
-           inputs_captured <= inputs_candidate;
-        end
-    end
-    logic [7:0] clean_ui_in;
-    logic clean_ena, clean_rst_n;
-    assign {clean_ui_in, clean_ena, clean_rst_n} = inputs_captured;
-
-    my_design my_design (
-        .ui_in(clean_ui_in),
-        //.uio_in(clean_uio_in),
-        .ena(clean_ena),
-        .rst_n(clean_rst_n),
-        .*);
-endmodule
 \TLV calc()
    
    
@@ -98,43 +48,54 @@ endmodule
       @1
          $equals_in = *ui_in[7];
          $reset = *reset;
-         $valid = (>>1$equals_in==0 & $equals_in ==1); 
-         $val1[7:0] = >>1$out;
+         $valid = $reset ? 1'b0 : (>>1$equals_in==0 & $equals_in ==1); 
+         $val1[7:0] = >>2$out;
          $val2[7:0] = {4'b0000,*ui_in[3:0]};
-         $sum[7:0] = $val1 + $val2;
-         $diff[7:0] = $val1 - $val2;
-         $prod[7:0] = $val1 * $val2;
-         $quot[7:0] = $val1 / $val2;
-         $op[1:0] = *ui_in[5:4];
-         $out[7:0] = $reset ? 8'b0: $valid ? ($op[1:0] == 2'd0) ? $sum[7:0] : (($op[1:0] == 2'd1) ? $diff[7:0] : (($op[1:0] == 2'd2) ? $prod[7:0] : $quot[7:0])) : >>1$out ;
+         ?$valid
+            $sum[7:0] = $val1 + $val2;
+            $diff[7:0] = $val1 - $val2;
+            $prod[7:0] = $val1 * $val2;
+            $quot[7:0] = $val1 / $val2;
+            $op[2:0] = *ui_in[6:4];
+      @2
+         $out[7:0] =
+               $reset ? 8'b0 :
+               $valid ? 
+               (($op[2:0] == 3'd0) ? $sum[7:0] : 
+               $op[2:0] == 3'd1 ? $diff[7:0] :
+               $op[2:0] == 3'd2 ? $prod[7:0] :
+               $op[2:0] == 3'd3 ? $quot[7:0] : >>2$mem) : >>1$out ;
+              
+         $mem[7:0] = 
+                  $reset ? 8'b0 : 
+                  $valid && ($op[2:0] == 3'd5) ? >>2$out : >>1$mem ;
+                  // we can use $RETAIN inplace of >>1$mem 
+      @3
+         $digit[3:0] = $out[3:0];
+         *uo_out =
+               $digit == 4'b0000 ? 8'b00111111 : //0
+               $digit == 4'b0001 ? 8'b00000110 : //1
+               $digit == 4'b0010 ? 8'b01011011 : //2
+               $digit == 4'b0011 ? 8'b01001111 : //3
+               $digit == 4'b0100 ? 8'b01100110 : //4
+               $digit == 4'b0101 ? 8'b01111101 : //5
+               $digit == 4'b0110 ? 8'b01111101 : //6
+               $digit == 4'b0111 ? 8'b00000111 : //7
+               $digit == 4'b1000 ? 8'b01111111 : //8
+               $digit == 4'b1001 ? 8'b01101111 : //9
+               $digit == 4'b1010 ? 8'b01110111 : //A
+               $digit == 4'b1011 ? 8'b01111100 : //b
+               $digit == 4'b1100 ? 8'b00111001 : //C
+               $digit == 4'b1101 ? 8'b01011110 : //d
+               $digit == 4'b1110 ? 8'b01111001 : //E
+               $digit == 4'b1111 ? 8'b01110001 : 8'b11111111 ;
    
-   $digit[3:0] = |calc>>1$out[3:0];
-   *uo_out =
-         $digit == 4'b0000 ? 8'b00111111 : //0
-         $digit == 4'b0001 ? 8'b00000110 : //1
-         $digit == 4'b0010 ? 8'b01011011 : //2
-         $digit == 4'b0011 ? 8'b01001111 : //3
-         $digit == 4'b0100 ? 8'b01100110 : //4
-         $digit == 4'b0101 ? 8'b01111101 : //5
-         $digit == 4'b0110 ? 8'b01111101 : //6
-         $digit == 4'b0111 ? 8'b00000111 : //7
-         $digit == 4'b1000 ? 8'b01111111 : //8
-         $digit == 4'b1001 ? 8'b01101111 : //9
-         $digit == 4'b1010 ? 8'b01110111 : //A
-         $digit == 4'b1011 ? 8'b01111100 : //b
-         $digit == 4'b1100 ? 8'b00111001 : //C
-         $digit == 4'b1101 ? 8'b01011110 : //d
-         $digit == 4'b1110 ? 8'b01111001 : //E
-         $digit == 4'b1111 ? 8'b01110001 : 8'b11111111 ;
-   
-            
-            
    
    // Note that pipesignals assigned here can be found under /fpga_pins/fpga.
    
    
 
-   m5+cal_viz(@1, m5_if(m5_in_fpga, /fpga, /top))
+   m5+cal_viz(@2, m5_if(m5_in_fpga, /fpga, /top))
    
    // Connect Tiny Tapeout outputs. Note that uio_ outputs are not available in the Tiny-Tapeout-3-based FPGA boards.
    //*uo_out = 8'b0;
@@ -160,7 +121,7 @@ module top(input logic clk, input logic reset, input logic [31:0] cyc_cnt, outpu
    logic rst_n = ! reset;
    
    // Instantiate the Tiny Tapeout module.
-   tt_um_example tt(.*);
+   m5_user_module_name tt(.*);
    
    assign passed = top.cyc_cnt > 80;
    assign failed = 1'b0;
